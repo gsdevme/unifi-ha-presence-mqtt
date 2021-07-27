@@ -1,4 +1,10 @@
-# 
+# Unifi Presence to MQTT for Home Assistant
+
+The integration supports MQTT auto discovery
+
+# Why?
+
+The current existing integration adds every single device from your unifi OS into home assistant and this clutters home assistant.
 
 ## TODO
 
