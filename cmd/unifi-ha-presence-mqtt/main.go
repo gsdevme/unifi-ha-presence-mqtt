@@ -12,7 +12,6 @@ import (
 
 func setupBroker() (mqtt.Client, error) {
 
-
 	clientOptions := mqtt.NewClientOptions().
 		SetClientID("gsdevme/unifi-ha-presence-mqtt").
 		AddBroker(os.Getenv("MQTT_DNS")).
@@ -51,7 +50,6 @@ func main() {
 	// TODO move to configuration (yaml... maybe csv style ENV)
 	devices := []string{"Ceilidhs-Phone", "iPhone-X"}
 
-
 	// TODO this likely makes sense to do but have another thing about it
 	for _, device := range devices {
 		hass.PublishAutoDiscoveryPlaceholder(device, broker)
@@ -62,7 +60,6 @@ func main() {
 	// TODO move to configuration/envs
 	c := unifi.NewHTTPClient("https://172.16.16.1", unifi.WithCredentials("admin", os.Getenv("UNIFI_PASSWORD")))
 	clients, _ := c.GetActiveClients("default")
-
 
 	var activeClients []unifi.ClientResponse
 	var presentClients []unifi.ClientResponse

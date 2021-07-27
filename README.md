@@ -13,6 +13,9 @@ The current existing integration adds every single device from your unifi OS int
 - [ ] Better error handling
 - [ ] Improve ENV
 
+## How to Use
+
+.. write this
 
 # Configuration
 
@@ -20,3 +23,7 @@ The current existing integration adds every single device from your unifi OS int
 export MQTT_DNS="mqtt://127.0.0.1:1883"
 export UNIFI_PASSWORD="password"
 ```
+
+## Packages
+
+- https://github.com/gsdevme/unifi

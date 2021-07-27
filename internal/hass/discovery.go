@@ -1,7 +1,7 @@
 package hass
 
 type DeviceAttributes struct {
-	IpAddress string `json:"ip_address"`
+	IpAddress  string `json:"ip_address"`
 	MacAddress string `json:"mac_address"`
 }
 
