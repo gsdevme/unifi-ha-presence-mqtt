@@ -36,16 +36,7 @@ func setupBroker() (mqtt.Client, error) {
 	return mqttClient, nil
 }
 
-func main() {
-	log.SetLevel(log.Debug) // @TODO
-
-	broker, err := setupBroker()
-
-	if err != nil {
-		fmt.Println(err.Error())
-
-		os.Exit(1)
-	}
+func pollUnifi(client unifi.Client, broker mqtt.Client) error {
 
 	// TODO move to configuration (yaml... maybe csv style ENV)
 	devices := []string{"Ceilidhs-Phone", "iPhone-X"}
@@ -58,8 +49,11 @@ func main() {
 	defer broker.Disconnect(5)
 
 	// TODO move to configuration/envs
-	c := unifi.NewHTTPClient("https://172.16.16.1", unifi.WithCredentials("admin", os.Getenv("UNIFI_PASSWORD")))
-	clients, _ := c.GetActiveClients("default")
+	clients, err := client.GetActiveClients("default")
+
+	if err != nil {
+		return fmt.Errorf("could not fetch unifi api: %w", err)
+	}
 
 	var activeClients []unifi.ClientResponse
 	var presentClients []unifi.ClientResponse
@@ -89,6 +83,41 @@ func main() {
 	for _, device := range devices {
 		log.Debugf("device %s not found to be connected to the wifi and is not present", device)
 		hass.PublishNotHome(device, broker)
+	}
+
+	return nil
+}
+
+func main() {
+	log.SetLevel(log.Debug) // @TODO
+
+	broker, err := setupBroker()
+
+	if err != nil {
+		fmt.Println(err.Error())
+
+		os.Exit(1)
+	}
+
+	httpClient := unifi.NewHTTPClient("https://172.16.16.1", unifi.WithCredentials("admin", os.Getenv("UNIFI_PASSWORD")))
+	_, err = httpClient.GetAuthToken()
+
+	if err != nil {
+		fmt.Println(err.Error())
+
+		os.Exit(1)
+	}
+
+	for {
+		err = pollUnifi(httpClient, broker)
+
+		if err != nil{
+			fmt.Println(err.Error())
+
+			os.Exit(1)
+		}
+
+		time.Sleep(10 * time.Second)
 	}
 
 	// @TODO move MQTT into channel?
