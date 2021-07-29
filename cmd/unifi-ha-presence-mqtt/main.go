@@ -100,13 +100,15 @@ func main() {
 	}
 
 	httpClient := unifi.NewHTTPClient(os.Getenv("UNIFI_HOST"), unifi.WithCredentials(os.Getenv("UNIFI_USERNAME"), os.Getenv("UNIFI_PASSWORD")))
-	_, err = httpClient.GetAuthToken()
+	authToken, err := httpClient.GetAuthToken()
 
 	if err != nil {
 		fmt.Println(err.Error())
 
 		os.Exit(1)
 	}
+
+	httpClient = unifi.NewHTTPClient(os.Getenv("UNIFI_HOST"), unifi.WithAuthToken(authToken))
 
 	for {
 		err = pollUnifi(httpClient, broker)
