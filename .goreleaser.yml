@@ -13,6 +13,29 @@ builds:
     goos:
       - linux
       - darwin
+dockers:
+  # You can have multiple Docker images.
+  -
+    goos: linux
+    goarch: amd64
+
+#    image_templates:
+#      - "myuser/myimage:latest"
+#      - "myuser/myimage:{{ .Tag }}"
+#      - "myuser/myimage:{{ .Tag }}-{{ .Env.GO_VERSION }}"
+#      - "myuser/myimage:v{{ .Major }}"
+#      - "gcr.io/myuser/myimage:latest"
+
+    skip_push: true
+    dockerfile: Dockerfile
+    use: docker
+
+    build_flag_templates:
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--platform=linux/arm64"
 archives:
   - replacements:
       darwin: Darwin
