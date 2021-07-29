@@ -7,6 +7,7 @@ import (
 	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/hass"
 	"github.com/gsdevme/unifi/pkg/unifi"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -38,8 +39,7 @@ func setupBroker() (mqtt.Client, error) {
 
 func pollUnifi(client unifi.Client, broker mqtt.Client) error {
 
-	// TODO move to configuration (yaml... maybe csv style ENV)
-	devices := []string{"Ceilidhs-Phone", "iPhone-X"}
+	devices := strings.Split(os.Getenv("TRACK_DEVICES"), ",")
 
 	// TODO this likely makes sense to do but have another thing about it
 	for _, device := range devices {
@@ -99,7 +99,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	httpClient := unifi.NewHTTPClient("https://172.16.16.1", unifi.WithCredentials("admin", os.Getenv("UNIFI_PASSWORD")))
+	httpClient := unifi.NewHTTPClient(os.Getenv("UNIFI_HOST"), unifi.WithCredentials(os.Getenv("UNIFI_USERNAME"), os.Getenv("UNIFI_PASSWORD")))
 	_, err = httpClient.GetAuthToken()
 
 	if err != nil {
