@@ -21,7 +21,11 @@ The current existing integration adds every single device from your unifi OS int
 
 ```bash
 export MQTT_DNS="mqtt://127.0.0.1:1883"
+# This should exactly match the hostname of the device
+export TRACK_DEVICES="phone1,phone2"
+export UNIFI_HOST="https://172.16.16.1"
 export UNIFI_PASSWORD="password"
+export UNIFI_USERNAME=admin
 ```
 
 ## Packages
