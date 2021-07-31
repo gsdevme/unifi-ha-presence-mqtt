@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/google/martian/log"
@@ -88,6 +89,17 @@ func pollUnifi(client unifi.Client, broker mqtt.Client) error {
 	return nil
 }
 
+func fetchAuthTokenWithCredentials() (string, error) {
+	httpClient := unifi.NewHTTPClient(os.Getenv("UNIFI_HOST"), unifi.WithCredentials(os.Getenv("UNIFI_USERNAME"), os.Getenv("UNIFI_PASSWORD")))
+	authToken, err := httpClient.GetAuthToken()
+
+	if err != nil {
+		return "", err
+	}
+
+	return authToken, nil
+}
+
 func main() {
 	log.SetLevel(log.Debug) // @TODO
 
@@ -99,8 +111,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	httpClient := unifi.NewHTTPClient(os.Getenv("UNIFI_HOST"), unifi.WithCredentials(os.Getenv("UNIFI_USERNAME"), os.Getenv("UNIFI_PASSWORD")))
-	authToken, err := httpClient.GetAuthToken()
+	authToken, err := fetchAuthTokenWithCredentials()
 
 	if err != nil {
 		fmt.Println(err.Error())
@@ -108,12 +119,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	httpClient = unifi.NewHTTPClient(os.Getenv("UNIFI_HOST"), unifi.WithAuthToken(authToken))
+	httpClient := unifi.NewHTTPClient(os.Getenv("UNIFI_HOST"), unifi.WithAuthToken(authToken))
 
 	for {
 		err = pollUnifi(httpClient, broker)
 
-		if err != nil{
+		if err != nil {
+			if errors.Is(err, &unifi.HttpAuthError{}) {
+				authToken, err := fetchAuthTokenWithCredentials()
+
+				if err != nil {
+					fmt.Println(err.Error())
+
+					os.Exit(1)
+				}
+
+				httpClient = unifi.NewHTTPClient(os.Getenv("UNIFI_HOST"), unifi.WithAuthToken(authToken))
+
+				continue
+			}
+
 			fmt.Println(err.Error())
 
 			os.Exit(1)
