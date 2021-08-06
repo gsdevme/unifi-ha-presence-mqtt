@@ -74,6 +74,8 @@ github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0/go.mod h1:8NvIoxWQoOIhqOTXgf
 github.com/grpc-ecosystem/grpc-gateway v1.9.0/go.mod h1:vNeuVxBJEsws4ogUvrchl83t/GYV9WGTSLVdBhOQFDY=
 github.com/gsdevme/unifi v0.0.0-20210731004300-e8e626e36489 h1:AbAWTEa7JI7fe4WFHKzFmC6cTmNER5QSnNo7MiPWslc=
 github.com/gsdevme/unifi v0.0.0-20210731004300-e8e626e36489/go.mod h1:fHPKYFolFBbJpKY0v+mpTGPalSsIMzCZKPXaQw10xUQ=
+github.com/gsdevme/unifi v0.0.0-20210731091252-f615a53f9f15 h1:6ZNyT7cUeF7IXugoCCd1TCleM8fBdTx9XzQo4G68M4s=
+github.com/gsdevme/unifi v0.0.0-20210731091252-f615a53f9f15/go.mod h1:fHPKYFolFBbJpKY0v+mpTGPalSsIMzCZKPXaQw10xUQ=
 github.com/hashicorp/consul/api v1.1.0/go.mod h1:VmuI/Lkw1nC05EYQWNKwWGbkg+FbDBtguAZLlVdkD9Q=
 github.com/hashicorp/consul/sdk v0.1.1/go.mod h1:VKf9jXwCTEY1QZP2MOLRhb5i/I/ssyNV1vwHyQBF0x8=
 github.com/hashicorp/errwrap v1.0.0/go.mod h1:YH+1FKiLXxHSkmPseP+kNlulaMuP3n2brvKWEqk/Jc4=
