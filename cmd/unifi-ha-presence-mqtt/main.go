@@ -53,7 +53,7 @@ func pollUnifi(client unifi.Client, broker mqtt.Client) error {
 	clients, err := client.GetActiveClients("default")
 
 	if err != nil {
-		return fmt.Errorf("could not fetch unifi api: %w", err)
+		return err
 	}
 
 	var activeClients []unifi.ClientResponse
@@ -126,6 +126,8 @@ func main() {
 
 		if err != nil {
 			if errors.Is(err, &unifi.HttpAuthError{}) {
+				fmt.Println("Token expired, Refreshing token")
+
 				authToken, err := fetchAuthTokenWithCredentials()
 
 				if err != nil {
