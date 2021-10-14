@@ -125,7 +125,8 @@ func main() {
 		err = pollUnifi(httpClient, broker)
 
 		if err != nil {
-			if errors.Is(err, &unifi.HttpAuthError{}) {
+			var authError *unifi.HttpAuthError
+			if errors.As(err, &authError) {
 				fmt.Println("Token expired, Refreshing token")
 
 				authToken, err := fetchAuthTokenWithCredentials()
