@@ -39,12 +39,15 @@ func setupBroker() (mqtt.Client, error) {
 }
 
 func pollUnifi(client unifi.Client, broker mqtt.Client) error {
+	var err error
 
 	devices := strings.Split(os.Getenv("TRACK_DEVICES"), ",")
 
 	// TODO this likely makes sense to do but have another thing about it
 	for _, device := range devices {
-		hass.PublishAutoDiscoveryPlaceholder(device, broker)
+		if err = hass.PublishAutoDiscoveryPlaceholder(device, broker); err != nil {
+			return err
+		}
 	}
 
 	defer broker.Disconnect(5)
@@ -78,12 +81,16 @@ func pollUnifi(client unifi.Client, broker mqtt.Client) error {
 
 	for _, client := range presentClients {
 		log.Debugf("%s", client)
-		hass.PublishAutoDiscoveryForClient(client, broker)
+		if err = hass.PublishAutoDiscoveryForClient(client, broker); err != nil {
+			return err
+		}
 	}
 
 	for _, device := range devices {
 		log.Debugf("device %s not found to be connected to the wifi and is not present", device)
-		hass.PublishNotHome(device, broker)
+		if err = hass.PublishNotHome(device, broker); err != nil {
+			return err
+		}
 	}
 
 	return nil
