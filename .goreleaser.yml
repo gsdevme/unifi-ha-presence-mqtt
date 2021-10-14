@@ -18,7 +18,6 @@ dockers:
       - "gsdevme/unifi-ha-presence-mqtt:latest"
       - "gsdevme/unifi-ha-presence-mqtt:{{ .Tag }}"
       - "gsdevme/unifi-ha-presence-mqtt:v{{ .Major }}"
-    skip_push: true
 archives:
   - replacements:
       darwin: Darwin
