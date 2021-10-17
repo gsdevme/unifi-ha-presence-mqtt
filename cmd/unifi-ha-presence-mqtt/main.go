@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const FailureThreshold = 3
+
 func setupBroker() (mqtt.Client, error) {
 
 	clientOptions := mqtt.NewClientOptions().
@@ -38,10 +40,8 @@ func setupBroker() (mqtt.Client, error) {
 	return mqttClient, nil
 }
 
-func pollUnifi(client unifi.Client, broker mqtt.Client) error {
+func pollUnifi(client unifi.Client, broker mqtt.Client, devices []string, failureThresholdCounter map[string]int) error {
 	var err error
-
-	devices := strings.Split(os.Getenv("TRACK_DEVICES"), ",")
 
 	// TODO this likely makes sense to do but have another thing about it
 	for _, device := range devices {
@@ -71,7 +71,6 @@ func pollUnifi(client unifi.Client, broker mqtt.Client) error {
 	for _, client := range activeClients {
 		for deviceIndex, deviceName := range devices {
 			if deviceName == client.Hostname {
-
 				presentClients = append(presentClients, client)
 
 				devices = append(devices[:deviceIndex], devices[deviceIndex+1:]...)
@@ -84,12 +83,21 @@ func pollUnifi(client unifi.Client, broker mqtt.Client) error {
 		if err = hass.PublishAutoDiscoveryForClient(client, broker); err != nil {
 			return err
 		}
+
+		failureThresholdCounter[client.Hostname] = 0
 	}
 
 	for _, device := range devices {
-		log.Debugf("device %s not found to be connected to the wifi and is not present", device)
-		if err = hass.PublishNotHome(device, broker); err != nil {
-			return err
+		failureThresholdCounter[device] = failureThresholdCounter[device]+1
+
+		if failureThresholdCounter[device] >= FailureThreshold {
+			log.Debugf("device %s not found to be connected to the wifi and is not present", device)
+
+			if err = hass.PublishNotHome(device, broker); err != nil {
+				return err
+			}
+
+			failureThresholdCounter[device] = 0
 		}
 	}
 
@@ -127,9 +135,16 @@ func main() {
 	}
 
 	httpClient := unifi.NewHTTPClient(os.Getenv("UNIFI_HOST"), unifi.WithAuthToken(authToken))
+	devices := strings.Split(os.Getenv("TRACK_DEVICES"), ",")
+
+	failureThresholdCounter := make(map[string]int)
+
+	for _, device := range devices {
+		failureThresholdCounter[device] = 0
+	}
 
 	for {
-		err = pollUnifi(httpClient, broker)
+		err = pollUnifi(httpClient, broker, devices, failureThresholdCounter)
 
 		if err != nil {
 			var authError *unifi.HttpAuthError
