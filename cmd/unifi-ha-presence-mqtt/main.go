@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const FailureThreshold = 3
+const FailureThreshold = 5
 
 func setupBroker() (mqtt.Client, error) {
 
