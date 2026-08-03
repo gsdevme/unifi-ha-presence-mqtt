@@ -1,15 +1,211 @@
 package cmd
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/config"
+	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/homeassistant"
+	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/mqtt"
+	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/presence"
+	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/publisher"
+	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/scheduler"
+	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/server"
+	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/unifi"
 )
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Run the poll -> MQTT presence service",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		return errors.New("serve: not implemented yet")
+		return runServe(cmd.Context())
 	},
+}
+
+func runServe(ctx context.Context) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	logger := newLogger(cfg.LogLevel, cfg.LogFormat)
+	logger.Info("starting", "config", cfg.String())
+	if cfg.Mode == "mock" {
+		logger.Warn("running in MOCK mode; not using a real UniFi controller")
+	}
+
+	// Status/health server listens immediately so probes work during init.
+	status := server.New(server.Config{
+		ReadyFailureThreshold: cfg.ReadyFailureThreshold,
+		PollInterval:          cfg.PollInterval,
+	})
+	healthSrv := &http.Server{Addr: cfg.HealthAddr, Handler: status.Handler()}
+	healthErr := make(chan error, 1)
+	go func() {
+		if err := healthSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			healthErr <- err
+			return
+		}
+		healthErr <- nil
+	}()
+
+	// UniFi client: authenticate up front (re-auth-on-401 lives in the provider).
+	provider := newUnifiProvider(cfg, logger)
+	if err := provider.Reauthenticate(ctx); err != nil {
+		return fmt.Errorf("unifi authenticate: %w", err)
+	}
+
+	tracker := presence.NewTracker(cfg.TrackDevices, cfg.FailureThreshold)
+
+	// MQTT connection (with LWT on the service availability topic).
+	availabilityTopic := homeassistant.Config{TopicPrefix: cfg.MQTTTopicPrefix}.AvailabilityTopic()
+	mc, err := mqtt.Connect(ctx, mqtt.Options{
+		BrokerURL:         cfg.MQTTBrokerURL,
+		Username:          cfg.MQTTUsername,
+		Password:          cfg.MQTTPassword,
+		ClientID:          cfg.MQTTClientID,
+		AvailabilityTopic: availabilityTopic,
+		Logger:            logger,
+	})
+	if err != nil {
+		return fmt.Errorf("mqtt: %w", err)
+	}
+
+	pub := publisher.New(mc, cfg.HADiscoveryPrefix, cfg.MQTTTopicPrefix)
+
+	// Republish availability + discovery + current state on every (re)connection.
+	mc.SetOnConnectionUp(func(ctx context.Context) {
+		devices := tracker.Devices()
+		if err := pub.PublishAvailability(ctx, true); err != nil {
+			logger.Warn("republish availability failed", "err", err)
+		}
+		if err := pub.PublishDiscovery(ctx, devices); err != nil {
+			logger.Warn("republish discovery failed", "err", err)
+		}
+		if err := pub.PublishStates(ctx, devices); err != nil {
+			logger.Warn("republish state failed", "err", err)
+		}
+	})
+
+	// Initial publish (in case the first connection-up fired before the callback
+	// was registered): discovery + online + seeded absent state so entities exist.
+	initial := tracker.Devices()
+	if err := pub.PublishDiscovery(ctx, initial); err != nil {
+		return fmt.Errorf("publish discovery: %w", err)
+	}
+	if err := pub.PublishAvailability(ctx, true); err != nil {
+		return fmt.Errorf("publish availability: %w", err)
+	}
+	if err := pub.PublishStates(ctx, initial); err != nil {
+		return fmt.Errorf("publish initial state: %w", err)
+	}
+
+	// Scheduler. recordingPublisher decorates pub so the status page records the
+	// device snapshot after each successful publish.
+	sched := scheduler.New(provider, tracker, recordingPublisher{pub: pub, status: status}, status, scheduler.Config{
+		PollInterval: cfg.PollInterval,
+		MaxRetries:   cfg.PollMaxRetries,
+		Logger:       logger,
+	})
+
+	schedDone := make(chan struct{})
+	go func() { sched.Run(ctx); close(schedDone) }()
+
+	logger.Info("service running")
+	select {
+	case err := <-healthErr:
+		return fmt.Errorf("health server: %w", err)
+	case <-ctx.Done():
+	}
+	logger.Info("shutting down")
+
+	// Graceful shutdown: explicit offline, clean disconnect, stop everything.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := pub.PublishAvailability(shutdownCtx, false); err != nil {
+		logger.Warn("publish offline failed", "err", err)
+	}
+	if err := mc.Disconnect(shutdownCtx); err != nil {
+		logger.Warn("mqtt disconnect failed", "err", err)
+	}
+	<-schedDone
+	return shutdownServer(healthSrv)
+}
+
+// recordingPublisher publishes state, then records the device snapshot for the
+// status page on success.
+type recordingPublisher struct {
+	pub    *publisher.Service
+	status *server.Server
+}
+
+func (r recordingPublisher) PublishStates(ctx context.Context, devices []presence.Device) error {
+	if err := r.pub.PublishStates(ctx, devices); err != nil {
+		return err // keep the last good snapshot, do not record
+	}
+	r.status.SetDevices(deviceViews(devices))
+	return nil
+}
+
+// deviceViews maps presence devices into the non-sensitive server view (IP/MAC
+// omitted).
+func deviceViews(devices []presence.Device) []server.DeviceView {
+	views := make([]server.DeviceView, 0, len(devices))
+	for _, d := range devices {
+		views = append(views, server.DeviceView{Hostname: d.Hostname, Present: d.Present})
+	}
+	return views
+}
+
+// unifiProvider owns the UniFi credentials and current client, re-authenticating
+// on demand when the session expires. It satisfies scheduler.ClientProvider.
+type unifiProvider struct {
+	host, username, password, site string
+	logger                         *slog.Logger
+
+	mu     sync.Mutex
+	client unifi.Client
+}
+
+func newUnifiProvider(cfg *config.Config, logger *slog.Logger) *unifiProvider {
+	return &unifiProvider{
+		host:     cfg.UnifiHost,
+		username: cfg.UnifiUsername,
+		password: cfg.UnifiPassword,
+		site:     cfg.UnifiSite,
+		logger:   logger,
+	}
+}
+
+func (p *unifiProvider) ActiveClients(_ context.Context) ([]unifi.ClientResponse, error) {
+	p.mu.Lock()
+	c := p.client
+	p.mu.Unlock()
+	return c.GetActiveClients(p.site)
+}
+
+// Reauthenticate logs in with the stored credentials and rebuilds the client to
+// reuse the fresh token, mirroring the token-reuse behaviour of the daemon.
+func (p *unifiProvider) Reauthenticate(_ context.Context) error {
+	token, err := unifi.NewHTTPClient(p.host, unifi.WithCredentials(p.username, p.password)).GetAuthToken()
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.client = unifi.NewHTTPClient(p.host, unifi.WithAuthToken(token))
+	p.mu.Unlock()
+	return nil
+}
+
+func shutdownServer(srv *http.Server) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return srv.Shutdown(ctx)
 }
