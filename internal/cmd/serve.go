@@ -63,9 +63,15 @@ func runServe(ctx context.Context) error {
 
 	tracker := presence.NewTracker(cfg.TrackDevices, cfg.FailureThreshold)
 
-	// MQTT connection (with LWT on the service availability topic).
+	// MQTT connection (with LWT on the service availability topic). The connection
+	// manager gets its own lifetime (mqttCtx), independent of the signal context, so
+	// on SIGTERM we can still publish a retained "offline" before disconnecting — a
+	// cancelled ctx would tear the manager down first and the clean Disconnect would
+	// then suppress the LWT, leaving the service stuck "online".
+	mqttCtx, mqttCancel := context.WithCancel(context.Background())
+	defer mqttCancel()
 	availabilityTopic := homeassistant.Config{TopicPrefix: cfg.MQTTTopicPrefix}.AvailabilityTopic()
-	mc, err := mqtt.Connect(ctx, mqtt.Options{
+	mc, err := mqtt.Connect(mqttCtx, mqtt.Options{
 		BrokerURL:         cfg.MQTTBrokerURL,
 		Username:          cfg.MQTTUsername,
 		Password:          cfg.MQTTPassword,
