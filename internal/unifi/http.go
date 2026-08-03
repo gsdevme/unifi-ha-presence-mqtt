@@ -1,7 +1,6 @@
 package unifi
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -11,142 +10,131 @@ import (
 
 const (
 	userAgent = "golang-unifi"
-	// AuthCookieName is the cookie the controller sets on login; its value is the
-	// session token sent back on subsequent requests.
-	AuthCookieName = "TOKEN"
+	// apiKeyHeader authenticates every Integration API request; its value is the
+	// local API key generated on the console.
+	apiKeyHeader = "X-API-KEY"
+	// pageLimit is the page size requested when walking the pagination envelope.
+	pageLimit = 200
 )
 
-// ClientFunc configures a client at construction time.
-type ClientFunc func(c *httpClient)
-
-// WithCredentials configures the client to log in with the given credentials the
-// first time a token is needed.
-func WithCredentials(username, password string) ClientFunc {
-	return func(c *httpClient) {
-		c.username = username
-		c.password = password
-	}
-}
-
-// WithAuthToken configures the client to reuse an existing session token,
-// short-circuiting the login flow.
-func WithAuthToken(token string) ClientFunc {
-	return func(c *httpClient) {
-		c.authToken = token
-	}
-}
-
 type httpClient struct {
-	baseURL   string
-	authToken string
-	username  string
-	password  string
-	http      *http.Client
+	baseURL string
+	apiKey  string
+	http    *http.Client
 }
 
-// NewHTTPClient builds a UniFi client for the controller at baseURL (e.g.
-// "https://192.168.1.1"), authenticating via the provided option. The transport
-// skips TLS verification because UniFi OS ships a self-signed certificate.
-func NewHTTPClient(baseURL string, auth ClientFunc) Client {
-	c := &httpClient{
+// NewHTTPClient builds a UniFi Integration API client for the console at baseURL
+// (e.g. "https://192.168.1.1"), authenticating every request with the static
+// apiKey via the X-API-KEY header. The transport skips TLS verification because
+// UniFi OS ships a self-signed certificate, with a 10s request timeout.
+func NewHTTPClient(baseURL, apiKey string) Client {
+	return &httpClient{
 		baseURL: baseURL,
+		apiKey:  apiKey,
 		http: &http.Client{
 			Transport: insecureTransport(),
 			Timeout:   10 * time.Second,
 		},
 	}
-	auth(c)
-	return c
 }
 
-func (c *httpClient) GetAuthToken() (string, error) {
-	if c.authToken != "" {
-		return c.authToken, nil
-	}
-
-	body, err := json.Marshal(&authRequestBody{
-		Username: c.username,
-		Password: c.password,
-		Remember: true,
-	})
-	if err != nil {
-		return "", fmt.Errorf("marshal auth request: %w", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, makeURL(c.baseURL, authLoginURI), bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("create login request: %w", err)
-	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Content-Type", "application/json")
-
-	res, err := c.http.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("authentication failed to %s: %w", c.baseURL, err)
-	}
-	defer func() { _ = res.Body.Close() }()
-
-	if res.StatusCode != http.StatusOK {
-		if res.StatusCode == http.StatusUnauthorized {
-			return "", &HttpAuthError{msg: "unauthorized: invalid credentials"}
+// ListSites returns every site, walking the pagination envelope.
+func (c *httpClient) ListSites() ([]Site, error) {
+	var sites []Site
+	for offset := 0; ; {
+		var page sitesPage
+		path := fmt.Sprintf("%s?offset=%d&limit=%d", integrationSitesURI, offset, pageLimit)
+		if err := c.getJSON(path, &page); err != nil {
+			return nil, fmt.Errorf("list sites: %w", err)
 		}
-		return "", fmt.Errorf("login: expected 200, got %d", res.StatusCode)
-	}
-
-	for _, cookie := range res.Cookies() {
-		if cookie.Name == AuthCookieName {
-			return cookie.Value, nil
+		for _, s := range page.Data {
+			sites = append(sites, Site(s))
+		}
+		offset += page.Count
+		if page.Count == 0 || offset >= page.TotalCount {
+			return sites, nil
 		}
 	}
-	return "", fmt.Errorf("login succeeded but no %s cookie was returned", AuthCookieName)
 }
 
+// GetActiveClients returns the currently connected clients for siteID, walking the
+// pagination envelope. "Connected" already means present, so the presence domain
+// treats every returned client as a sighting.
 func (c *httpClient) GetActiveClients(siteID string) ([]ClientResponse, error) {
-	token, err := c.GetAuthToken()
-	if err != nil {
-		return nil, fmt.Errorf("get active clients: %w", err)
+	base := fmt.Sprintf(integrationClientsURI, siteID)
+	var clients []ClientResponse
+	for offset := 0; ; {
+		var page clientsPage
+		path := fmt.Sprintf("%s?offset=%d&limit=%d", base, offset, pageLimit)
+		if err := c.getJSON(path, &page); err != nil {
+			return nil, fmt.Errorf("list connected clients: %w", err)
+		}
+		for _, d := range page.Data {
+			clients = append(clients, ClientResponse{
+				IPAddress:  d.IPAddress,
+				MACAddress: d.MACAddress,
+				Hostname:   firstNonEmpty(d.Hostname, d.Name),
+				Name:       d.Name,
+				LastSeen:   parseTimestamp(d.ConnectedAt),
+			})
+		}
+		offset += page.Count
+		if page.Count == 0 || offset >= page.TotalCount {
+			return clients, nil
+		}
 	}
+}
 
-	requestURL := makeURL(c.baseURL, fmt.Sprintf(activeClientsURI, siteID))
-	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+// getJSON issues an authenticated GET for path (relative to the base URL) and
+// decodes a 200 JSON body into out. A 401/403 becomes *AuthError; any other
+// non-200 is a generic error.
+func (c *httpClient) getJSON(path string, out any) error {
+	req, err := http.NewRequest(http.MethodGet, makeURL(c.baseURL, path), nil)
 	if err != nil {
-		return nil, fmt.Errorf("create active-clients request: %w", err)
+		return fmt.Errorf("create request: %w", err)
 	}
-	req.AddCookie(&http.Cookie{Name: AuthCookieName, Value: token})
+	req.Header.Set(apiKeyHeader, c.apiKey)
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 
 	res, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get active clients from %s: %w", requestURL, err)
+		return fmt.Errorf("request to %s: %w", c.baseURL, err)
 	}
 	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
-		if res.StatusCode == http.StatusUnauthorized {
-			return nil, &HttpAuthError{msg: "unauthorized: session expired"}
+		if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+			return &AuthError{msg: fmt.Sprintf("unauthorized (%d): check UNIFI_API_KEY", res.StatusCode)}
 		}
-		return nil, fmt.Errorf("active clients: expected 200, got %d", res.StatusCode)
+		return fmt.Errorf("expected 200, got %d", res.StatusCode)
 	}
+	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
 
-	var decoded activeClientsJSON
-	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
-		return nil, fmt.Errorf("decode active-clients response: %w", err)
+// firstNonEmpty returns the first non-empty string, or "".
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
 	}
+	return ""
+}
 
-	clients := make([]ClientResponse, 0, len(decoded.Data))
-	for _, d := range decoded.Data {
-		clients = append(clients, ClientResponse{
-			SiteID:     d.SiteID,
-			IPAddress:  d.IP,
-			MACAddress: d.Mac,
-			DeviceName: d.DeviceName,
-			Hostname:   d.Hostname,
-			Name:       d.Name,
-			LastSeen:   time.Unix(d.LastSeen, 0),
-		})
+// parseTimestamp parses an Integration API ISO-8601 timestamp (e.g. connectedAt),
+// returning the zero time when it is empty or unparseable.
+func parseTimestamp(s string) time.Time {
+	if s == "" {
+		return time.Time{}
 	}
-	return clients, nil
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	return time.Time{}
 }
 
 // insecureTransport clones the default transport and disables TLS verification

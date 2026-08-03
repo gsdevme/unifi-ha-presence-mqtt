@@ -1,53 +1,63 @@
 # 01 — UniFi client
 
-`internal/unifi` is a self-contained port of the two endpoints this service needs from
-a UniFi Network controller running on UniFi OS (UDM / UDM-Pro / Cloud Key Gen2+). It is
-read-only.
+`internal/unifi` is a self-contained, read-only client for the official **UniFi
+Network Integration API** (the supported local integration surface, v10.4.57) as
+exposed by a UniFi OS console (UDM / UDM-Pro / Cloud Key Gen2+). It replaces the
+legacy `api/auth/login` → `TOKEN` cookie flow, which is undocumented and breaks with
+MFA.
 
 ## Construction
 
 ```go
-c := unifi.NewHTTPClient(host, unifi.WithCredentials(user, pass)) // login flow
-c := unifi.NewHTTPClient(host, unifi.WithAuthToken(token))        // reuse a token
+c := unifi.NewHTTPClient(host, apiKey) // static X-API-KEY on every request
 ```
 
-- `host` is the controller base URL, e.g. `https://192.168.1.1` (no trailing slash).
-- Exactly one auth option is applied. `WithAuthToken` short-circuits login:
-  `GetAuthToken()` returns the supplied token without a network call.
+- `host` is the console base URL, e.g. `https://192.168.1.1` (no trailing slash).
+- `apiKey` is a **local API key** minted on the console (Settings → Control Plane →
+  Integrations → API Keys). It is sent as the `X-API-KEY` header on every request —
+  there is no login, cookie, or session to refresh. (REQ-UF-02)
 - The HTTP transport sets `InsecureSkipVerify: true` because UniFi OS ships a
   self-signed certificate, and a 10s request timeout. (REQ-UF-04)
 
 ## Endpoints
 
-### `GetAuthToken() (string, error)` — `POST api/auth/login` (REQ-UF-02)
+All endpoints live under `proxy/network/integration/v1` and return a **pagination
+envelope** `{offset, limit, count, totalCount, data:[…]}`. The client walks pages
+(fixed `limit`, advancing `offset` by each page's `count`) until every element is
+read. (REQ-UF-08)
 
-- Body: `{"username","password","remember":true}`, `Content-Type: application/json`.
-- On `200`, the controller sets a `TOKEN` cookie; its value is the bearer token
-  returned. If the cookie is absent the call errors.
-- On `401`, returns `*HttpAuthError` (REQ-UF-05). Any other non-200 is a generic error.
-- When the client was built `WithAuthToken`, returns that token immediately.
+### `ListSites() ([]Site, error)` — `GET /v1/sites` (REQ-UF-03)
 
-### `GetActiveClients(site) ([]ClientResponse, error)` — `GET proxy/network/api/s/<site>/stat/sta` (REQ-UF-03)
+- Returns the console's sites, each a `Site{ID, Name}` where `ID` is a UUID (not the
+  legacy `"default"` string). Used at startup to resolve the `UNIFI_SITE` name.
 
-- Authenticated by sending the `TOKEN` cookie (value from `GetAuthToken`, so a
-  credentials client logs in lazily on first use).
-- On `200`, decodes the controller's `stat/sta` payload (`{meta, data:[...]}`) into
-  `[]ClientResponse`, keeping only the fields the presence domain needs (REQ-UF-06).
-- On `401`, returns `*HttpAuthError` so the scheduler can re-authenticate (REQ-UF-05).
+### `GetActiveClients(siteID) ([]ClientResponse, error)` — `GET /v1/sites/<siteId>/clients` (REQ-UF-03)
+
+- "List Connected Clients": only currently connected clients are returned, so every
+  element is a present sighting for the presence domain.
+- Decodes the identity subset the domain needs into `[]ClientResponse` (REQ-UF-06);
+  unknown fields are ignored.
 
 ## Types
 
-`ClientResponse` (REQ-UF-06): `Hostname, IPAddress, MACAddress, DeviceName, Name,
-SiteID string` and `LastSeen time.Time` (Unix-seconds `last_seen` decoded to a time).
-The controller's full `stat/sta` element has ~90 fields; only the identity subset is
-mapped (`json.go`).
+`Site` (REQ-UF-03): `ID, Name string` — a site UUID and its human name.
 
-`*HttpAuthError` (REQ-UF-05) is a distinct error type returned on HTTP 401 so callers
-do `errors.As(err, &authErr)` to drive transparent re-authentication.
+`ClientResponse` (REQ-UF-06): `IPAddress, MACAddress, Hostname, Name string` and
+`LastSeen time.Time`. Mapping from the client JSON: `Hostname =
+firstNonEmpty(hostname, name)`, `Name = name`, `IPAddress = ipAddress`,
+`MACAddress = macAddress`, `LastSeen` parsed from the ISO-8601 `connectedAt`. The
+`hostname`/`macAddress` keys live on the wired/wireless sub-schemas; decoding is
+permissive so confirming the exact name/hostname key against a real console is a
+one-line change.
+
+`*AuthError` (REQ-UF-05) is returned on HTTP **401/403** — a missing or invalid
+`X-API-KEY`. Because the key is static there is no re-auth: a persistent `AuthError`
+means the key is wrong. It is exported so tests inspect it via `errors.As`.
 
 ## Files
 
-`client.go` (interface, URL helper, request bodies), `http.go` (transport, the two
-calls, options), `model.go` (`ClientResponse`), `json.go` (the `stat/sta` decode
-struct), `errors.go` (`HttpAuthError`), `client_test.go` (httptest coverage of the
-login-cookie extraction, active-clients decode, and the 401 → `HttpAuthError` path).
+`client.go` (interface, endpoint paths, URL helper), `http.go` (transport, the two
+paginated calls, the `getJSON` helper), `model.go` (`Site`, `ClientResponse`),
+`json.go` (pagination-envelope + client decode structs), `errors.go` (`AuthError`),
+`client_test.go` (httptest coverage of the `X-API-KEY` header, sites/clients decode
+including a paginated case, and the 401 → `*AuthError` path).

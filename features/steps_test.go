@@ -50,24 +50,15 @@ func (w *world) cleanup() {
 	}
 }
 
-// testProvider mirrors cmd.unifiProvider: it owns the credentials and current
-// client, re-authenticating on demand (scheduler.ClientProvider).
+// testProvider mirrors cmd.unifiProvider: a single Integration API client plus the
+// resolved site UUID, no re-auth (scheduler.ClientProvider).
 type testProvider struct {
-	host, site string
-	client     unifi.Client
+	client unifi.Client
+	siteID string
 }
 
 func (p *testProvider) ActiveClients(context.Context) ([]unifi.ClientResponse, error) {
-	return p.client.GetActiveClients(p.site)
-}
-
-func (p *testProvider) Reauthenticate(context.Context) error {
-	token, err := unifi.NewHTTPClient(p.host, unifi.WithCredentials("mock", "mock")).GetAuthToken()
-	if err != nil {
-		return err
-	}
-	p.client = unifi.NewHTTPClient(p.host, unifi.WithAuthToken(token))
-	return nil
+	return p.client.GetActiveClients(p.siteID)
 }
 
 // --- Given ---
@@ -97,10 +88,13 @@ func (w *world) serviceStartsUp() error {
 	w.mock = mock.New(mock.Options{Clients: w.clients})
 	w.srv = httptest.NewServer(w.mock.Handler())
 
-	provider := &testProvider{host: w.srv.URL, site: "default"}
-	if err := provider.Reauthenticate(w.ctx); err != nil {
+	// Build the client and resolve the site UUID, mirroring cmd/serve.go startup.
+	client := unifi.NewHTTPClient(w.srv.URL, "test-key")
+	sites, err := client.ListSites()
+	if err != nil {
 		return err
 	}
+	provider := &testProvider{client: client, siteID: sites[0].ID}
 	tracker := presence.NewTracker(w.tracked, w.threshold)
 	w.rec = publisher.NewRecordingPublisher()
 	w.pub = publisher.New(w.rec, "homeassistant", "unifi")
@@ -135,11 +129,6 @@ func (w *world) deviceLeaves(host string) error {
 	}
 	w.clients = kept
 	w.mock.SetClients(w.clients)
-	return nil
-}
-
-func (w *world) sessionExpires() error {
-	w.mock.ExpireSession()
 	return nil
 }
 
@@ -201,14 +190,6 @@ func (w *world) readinessReady() error {
 	return nil
 }
 
-func (w *world) moreThanOneLogin() error {
-	login, _ := w.mock.Counts()
-	if login <= 1 {
-		return fmt.Errorf("login count = %d, want > 1 (re-auth occurred)", login)
-	}
-	return nil
-}
-
 func TestFeatures(t *testing.T) {
 	w := &world{}
 	suite := godog.TestSuite{
@@ -229,14 +210,12 @@ func TestFeatures(t *testing.T) {
 			ctx.Step(`^the service starts up$`, w.serviceStartsUp)
 			ctx.Step(`^a poll runs$`, w.pollRuns)
 			ctx.Step(`^"([^"]*)" leaves the controller$`, w.deviceLeaves)
-			ctx.Step(`^the controller session expires$`, w.sessionExpires)
 			ctx.Step(`^the service shuts down$`, w.serviceShutsDown)
 
 			ctx.Step(`^the (presence|connectivity) discovery for "([^"]*)" is published retained$`, w.discoveryPublishedRetained)
 			ctx.Step(`^availability "([^"]*)" is published retained$`, w.availabilityPublished)
 			ctx.Step(`^the state for "([^"]*)" reports present (true|false)$`, w.stateReportsPresent)
 			ctx.Step(`^the readiness endpoint reports ready$`, w.readinessReady)
-			ctx.Step(`^the controller received more than one login$`, w.moreThanOneLogin)
 		},
 		Options: &godog.Options{
 			Format:   "pretty",

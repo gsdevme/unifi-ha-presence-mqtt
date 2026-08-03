@@ -13,38 +13,20 @@ import (
 )
 
 type fakeProvider struct {
-	mu          sync.Mutex
-	calls       int
-	reauths     int
-	failN       int  // fail the first N ActiveClients calls with a transient error
-	authErrOnce bool // return *HttpAuthError on the first call, then succeed
-	clients     []unifi.ClientResponse
+	mu      sync.Mutex
+	calls   int
+	failN   int // fail the first N ActiveClients calls with a transient error
+	clients []unifi.ClientResponse
 }
 
 func (f *fakeProvider) ActiveClients(context.Context) ([]unifi.ClientResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	if f.authErrOnce && f.reauths == 0 {
-		return nil, &unifi.HttpAuthError{}
-	}
 	if f.calls <= f.failN {
 		return nil, errors.New("transient")
 	}
 	return f.clients, nil
-}
-
-func (f *fakeProvider) Reauthenticate(context.Context) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.reauths++
-	return nil
-}
-
-func (f *fakeProvider) counts() (calls, reauths int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls, f.reauths
 }
 
 type fakePublisher struct {
@@ -160,33 +142,6 @@ func TestTransientRetrySucceeds(t *testing.T) {
 		}
 		if _, failure := h.counts(); failure != 0 {
 			t.Fatalf("health failure = %d, want 0 (retries absorbed the transient errors)", failure)
-		}
-		cancel()
-		<-done
-	})
-}
-
-func TestReauthOn401(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f := &fakeProvider{clients: []unifi.ClientResponse{{Hostname: "phone1"}}, authErrOnce: true}
-		p := &fakePublisher{}
-		h := &fakeHealth{}
-		tr := presence.NewTracker([]string{"phone1"}, 5)
-		s := New(f, tr, p, h, baseConfig())
-
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() { s.Run(ctx); close(done) }()
-
-		synctest.Wait()
-		if _, reauths := f.counts(); reauths != 1 {
-			t.Fatalf("reauths = %d, want 1 (transparent re-auth on 401)", reauths)
-		}
-		if p.publishCount() != 1 {
-			t.Fatalf("publish count = %d, want 1 (re-auth then retry succeeds)", p.publishCount())
-		}
-		if success, failure := h.counts(); success != 1 || failure != 0 {
-			t.Fatalf("health success=%d failure=%d, want 1/0", success, failure)
 		}
 		cancel()
 		<-done

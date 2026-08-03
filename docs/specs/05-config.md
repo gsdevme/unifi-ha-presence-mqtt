@@ -9,13 +9,12 @@ git-ignored and holds real secrets.
 
 | Env var | Default | Required | Description |
 | --- | --- | --- | --- |
-| `MODE` | `live` | no | `live` targets the real UniFi controller; `mock` targets the local `mock` server. |
+| `MODE` | `live` | no | `live` targets the real UniFi console (Integration API); `mock` targets the local `mock` server. |
 | `MOCK_URL` | `http://localhost:8090` | no | Mock server base URL; used only when `MODE=mock`. Must match the `mock` command's `--addr`. |
-| `UNIFI_HOST` | — | if `live` | Controller base URL, e.g. `https://192.168.1.1`. Ignored in `mock` (resolved to `MOCK_URL`). |
-| `UNIFI_USERNAME` | — | if `live` | Controller local-admin username. Ignored in `mock` (a dummy is used). |
-| `UNIFI_PASSWORD` | — | if `live` | Controller local-admin password. Ignored in `mock` (a dummy is used). |
-| `UNIFI_SITE` | `default` | no | UniFi site id in the `stat/sta` path. |
-| `TRACK_DEVICES` | — | yes | Comma-separated hostnames to track, e.g. `phone1,phone2`. |
+| `UNIFI_HOST` | — | if `live` | Console base URL, e.g. `https://192.168.1.1`. Ignored in `mock` (resolved to `MOCK_URL`). |
+| `UNIFI_API_KEY` | — | if `live` | Local Integration API key, sent as the `X-API-KEY` header. Ignored in `mock` (a dummy is used). |
+| `UNIFI_SITE` | `default` | no | UniFi site **name**, resolved to a site UUID at startup (falls back to the sole site). |
+| `TRACK_DEVICES` | — | yes | Comma-separated `Name` or `Name=Pattern` entries, e.g. `iPhone-X=e8:78:65:00:fd:81`. `Name` is the HA identity; `Pattern` (default `Name`) is a case-insensitive substring matched against the client's name or MAC (see REQ-DM-07). |
 | `POLL_INTERVAL` | `10s` | no | Poll cadence (`time.ParseDuration`). Floor `2s`. |
 | `FAILURE_THRESHOLD` | `5` | no | Consecutive missed polls before a device flips to `not_home`. Must be `>= 1`. |
 | `POLL_MAX_RETRIES` | `3` | no | Transient-error retries per poll before it counts as failed. |
@@ -35,14 +34,14 @@ git-ignored and holds real secrets.
 - Fail fast via `errors.Join` (exit non-zero with a clear, aggregated message) when a
   required var is missing or a duration/URL fails to parse.
 - `MODE` must be `live` or `mock`. In `mock`, `UNIFI_HOST` resolves to `MOCK_URL` and
-  the credential requirement is dropped (dummies supplied); in `live`, `UNIFI_HOST`/
-  `UNIFI_USERNAME`/`UNIFI_PASSWORD` are required.
+  the API-key requirement is dropped (a dummy is supplied); in `live`, `UNIFI_HOST` and
+  `UNIFI_API_KEY` are required.
 - `TRACK_DEVICES` must contain at least one non-empty hostname (REQ-CF-05).
 - `POLL_INTERVAL` below the `2s` floor is rejected.
 - `FAILURE_THRESHOLD` must be `>= 1`; `POLL_MAX_RETRIES` and `READY_FAILURE_THRESHOLD`
   must be `>= 0` / `>= 1` respectively.
-- Secrets (`UNIFI_PASSWORD`, `MQTT_PASSWORD`) are never logged; the config's `String()`
-  redacts them (REQ-CF-03).
+- Secrets (`UNIFI_API_KEY`, `MQTT_PASSWORD`) are never logged; the config's `String()`
+  redacts them by omission (REQ-CF-03).
 
 ## Defaults differ by surface (REQ-CF-04)
 

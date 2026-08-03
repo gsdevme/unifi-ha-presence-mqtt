@@ -135,6 +135,67 @@ func TestThresholdBelowOneTreatedAsOne(t *testing.T) {
 	}
 }
 
+func TestMatchByMACWithFriendlyName(t *testing.T) {
+	// Name=MAC: the device identity is the friendly name; matching is by MAC.
+	tr := NewTracker([]string{"iPhone-X=e8:78:65:00:fd:81"}, 5)
+	got := byHost(tr.Apply([]unifi.ClientResponse{
+		{Name: "iPhone-X fd:81", Hostname: "iPhone-X fd:81", MACAddress: "e8:78:65:00:fd:81", IPAddress: "10.0.0.5"},
+	}))
+	d, ok := got["iPhone-X"]
+	if !ok {
+		t.Fatalf("device identity should be the friendly name; snapshot = %v", got)
+	}
+	if !d.Present {
+		t.Error("should match by MAC and report present")
+	}
+	if d.IPAddress != "10.0.0.5" || d.MACAddress != "e8:78:65:00:fd:81" {
+		t.Errorf("ip/mac not captured: %+v", d)
+	}
+}
+
+func TestMatchByPartialMACSuffix(t *testing.T) {
+	tr := NewTracker([]string{"Phone=fd:81"}, 5)
+	got := byHost(tr.Apply([]unifi.ClientResponse{
+		{Name: "iPhone-X fd:81", MACAddress: "e8:78:65:00:fd:81"},
+	}))
+	if !got["Phone"].Present {
+		t.Error("a partial MAC suffix should match the full MAC")
+	}
+}
+
+func TestMACMatchIgnoresSeparatorsAndCase(t *testing.T) {
+	tr := NewTracker([]string{"x=E87865-00FD81"}, 5)
+	got := byHost(tr.Apply([]unifi.ClientResponse{
+		{Name: "whatever", MACAddress: "e8:78:65:00:fd:81"},
+	}))
+	if !got["x"].Present {
+		t.Error("MAC matching should ignore separators and case")
+	}
+}
+
+func TestNameMatchToleratesConsoleMACSuffix(t *testing.T) {
+	// The console appends a MAC-octet suffix to names; a plain name pattern (useful
+	// for phones with rotating/private MACs, where a stable name is the anchor) still
+	// matches via substring.
+	tr := NewTracker([]string{"Ceilidhs-Phone"}, 5)
+	got := byHost(tr.Apply([]unifi.ClientResponse{
+		{Name: "Ceilidhs-Phone 00:35", Hostname: "Ceilidhs-Phone 00:35", MACAddress: "5c:13:cc:38:00:35"},
+	}))
+	if !got["Ceilidhs-Phone"].Present {
+		t.Error("name pattern should match the suffixed console name")
+	}
+}
+
+func TestNamePatternNotMatchedAgainstMAC(t *testing.T) {
+	tr := NewTracker([]string{"Sonos"}, 5)
+	got := byHost(tr.Apply([]unifi.ClientResponse{
+		{Name: "Office Speaker", MACAddress: "50:6f:6e:6f:73:00"},
+	}))
+	if got["Sonos"].Present {
+		t.Error("a non-hex name pattern must only match names, not MAC digits")
+	}
+}
+
 func TestApplyReturnsStableOrder(t *testing.T) {
 	tr := NewTracker([]string{"c", "a", "b"}, 5)
 	devices := tr.Apply(nil)

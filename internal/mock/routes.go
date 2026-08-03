@@ -2,9 +2,9 @@ package mock
 
 import "net/http"
 
-// addRoutes is the single place mapping the UniFi controller URL surface to
-// handlers, mirroring the two endpoints internal/unifi calls.
+// addRoutes is the single place mapping the UniFi Network Integration API URL
+// surface to handlers, mirroring the two endpoints internal/unifi calls.
 func addRoutes(mux *http.ServeMux, s *Server) {
-	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
-	mux.HandleFunc("GET /proxy/network/api/s/{site}/stat/sta", s.handleActiveClients)
+	mux.HandleFunc("GET /proxy/network/integration/v1/sites", s.handleSites)
+	mux.HandleFunc("GET /proxy/network/integration/v1/sites/{site}/clients", s.handleClients)
 }

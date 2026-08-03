@@ -2,121 +2,119 @@ package unifi_test
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/unifi"
 )
 
-// newController spins up a fake UniFi OS controller. handleLogin serves
-// POST api/auth/login; the stat/sta route returns stataBody with stataStatus.
-func newController(t *testing.T, handleLogin http.HandlerFunc, stataStatus int, stataBody string) *httptest.Server {
-	t.Helper()
+const testAPIKey = "secret-api-key"
+
+// requireAPIKey writes 401 unless the request carries the expected X-API-KEY.
+func requireAPIKey(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("X-API-KEY") != testAPIKey {
+		w.WriteHeader(http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+func TestListSites(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/auth/login", handleLogin)
-	mux.HandleFunc("GET /proxy/network/api/s/{site}/stat/sta", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(stataStatus)
-		_, _ = w.Write([]byte(stataBody))
+	mux.HandleFunc("GET /proxy/network/integration/v1/sites", func(w http.ResponseWriter, r *http.Request) {
+		if !requireAPIKey(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"offset":0,"limit":200,"count":1,"totalCount":1,` +
+			`"data":[{"id":"11111111-2222-3333-4444-555555555555","name":"Default"}]}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv
-}
 
-func loginOK(token string) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: unifi.AuthCookieName, Value: token})
-		w.WriteHeader(http.StatusOK)
+	c := unifi.NewHTTPClient(srv.URL, testAPIKey)
+	sites, err := c.ListSites()
+	if err != nil {
+		t.Fatalf("ListSites: %v", err)
+	}
+	if len(sites) != 1 {
+		t.Fatalf("got %d sites, want 1", len(sites))
+	}
+	if sites[0].ID != "11111111-2222-3333-4444-555555555555" || sites[0].Name != "Default" {
+		t.Errorf("site = %+v", sites[0])
 	}
 }
 
-func TestGetAuthToken(t *testing.T) {
-	t.Run("extracts the TOKEN cookie from login", func(t *testing.T) {
-		srv := newController(t, loginOK("session-1337"), http.StatusOK, "")
-		c := unifi.NewHTTPClient(srv.URL, unifi.WithCredentials("admin", "pass"))
-		got, err := c.GetAuthToken()
-		if err != nil {
-			t.Fatalf("GetAuthToken: %v", err)
-		}
-		if got != "session-1337" {
-			t.Errorf("token = %q, want session-1337", got)
-		}
-	})
-
-	t.Run("401 returns *HttpAuthError", func(t *testing.T) {
-		srv := newController(t, func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusUnauthorized)
-		}, http.StatusOK, "")
-		c := unifi.NewHTTPClient(srv.URL, unifi.WithCredentials("admin", "wrong"))
-		_, err := c.GetAuthToken()
-		var authErr *unifi.HttpAuthError
-		if !errors.As(err, &authErr) {
-			t.Fatalf("err = %v, want *HttpAuthError", err)
-		}
-	})
-
-	t.Run("missing cookie errors", func(t *testing.T) {
-		srv := newController(t, func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}, http.StatusOK, "")
-		c := unifi.NewHTTPClient(srv.URL, unifi.WithCredentials("admin", "pass"))
-		if _, err := c.GetAuthToken(); err == nil {
-			t.Fatal("expected error when no TOKEN cookie is returned")
-		}
-	})
-
-	t.Run("WithAuthToken short-circuits login", func(t *testing.T) {
-		c := unifi.NewHTTPClient("https://example.invalid", unifi.WithAuthToken("preset-token"))
-		got, err := c.GetAuthToken()
-		if err != nil || got != "preset-token" {
-			t.Fatalf("token = %q err = %v, want preset-token", got, err)
-		}
-	})
-}
-
-const staBody = `{
-  "meta": {"rc": "ok"},
-  "data": [
-    {"site_id": "s1", "mac": "aa:bb:cc:dd:ee:ff", "ip": "192.168.1.20",
-     "hostname": "phone1", "name": "Phone One", "device_name": "iPhone", "last_seen": 1700000000},
-    {"site_id": "s1", "mac": "11:22:33:44:55:66", "ip": "192.168.1.21", "last_seen": 1700000001}
-  ]
-}`
-
 func TestGetActiveClients(t *testing.T) {
-	t.Run("decodes the identity subset", func(t *testing.T) {
-		srv := newController(t, loginOK("tok"), http.StatusOK, staBody)
-		c := unifi.NewHTTPClient(srv.URL, unifi.WithAuthToken("tok"))
-		clients, err := c.GetActiveClients("default")
+	t.Run("sends X-API-KEY and decodes clients across pages", func(t *testing.T) {
+		// One client per page so the client must follow the pagination envelope.
+		clients := []string{
+			`{"id":"c1","name":"Phone One","hostname":"phone1","ipAddress":"192.168.1.20",` +
+				`"macAddress":"aa:bb:cc:dd:ee:ff","type":"WIRELESS","connectedAt":"2024-01-02T03:04:05Z"}`,
+			`{"id":"c2","name":"laptop","ipAddress":"192.168.1.21",` +
+				`"macAddress":"11:22:33:44:55:66","type":"WIRED","connectedAt":"2024-01-02T03:04:06Z"}`,
+		}
+		var gotKey string
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /proxy/network/integration/v1/sites/{site}/clients", func(w http.ResponseWriter, r *http.Request) {
+			gotKey = r.Header.Get("X-API-KEY")
+			if !requireAPIKey(w, r) {
+				return
+			}
+			offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+			w.Header().Set("Content-Type", "application/json")
+			if offset >= len(clients) {
+				_, _ = fmt.Fprintf(w, `{"offset":%d,"limit":1,"count":0,"totalCount":%d,"data":[]}`, offset, len(clients))
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"offset":%d,"limit":1,"count":1,"totalCount":%d,"data":[%s]}`, offset, len(clients), clients[offset])
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		c := unifi.NewHTTPClient(srv.URL, testAPIKey)
+		got, err := c.GetActiveClients("site-uuid")
 		if err != nil {
 			t.Fatalf("GetActiveClients: %v", err)
 		}
-		if len(clients) != 2 {
-			t.Fatalf("got %d clients, want 2", len(clients))
+		if gotKey != testAPIKey {
+			t.Errorf("X-API-KEY header = %q, want %q", gotKey, testAPIKey)
 		}
-		c0 := clients[0]
-		if c0.Hostname != "phone1" || c0.IPAddress != "192.168.1.20" || c0.MACAddress != "aa:bb:cc:dd:ee:ff" {
+		if len(got) != 2 {
+			t.Fatalf("got %d clients, want 2 (paginated)", len(got))
+		}
+		c0 := got[0]
+		if c0.Hostname != "phone1" || c0.Name != "Phone One" || c0.IPAddress != "192.168.1.20" || c0.MACAddress != "aa:bb:cc:dd:ee:ff" {
 			t.Errorf("client[0] = %+v", c0)
 		}
-		if c0.SiteID != "s1" || c0.DeviceName != "iPhone" || c0.Name != "Phone One" {
-			t.Errorf("client[0] identity = %+v", c0)
+		if c0.LastSeen.IsZero() {
+			t.Errorf("client[0].LastSeen not parsed from connectedAt")
 		}
-		if c0.LastSeen.Unix() != 1700000000 {
-			t.Errorf("client[0] LastSeen = %v", c0.LastSeen)
-		}
-		if clients[1].Hostname != "" {
-			t.Errorf("client[1] hostname = %q, want empty (unnamed client)", clients[1].Hostname)
+		// The wired sub-schema omits hostname, so it falls back to name.
+		if got[1].Hostname != "laptop" {
+			t.Errorf("client[1].Hostname = %q, want laptop (fallback to name)", got[1].Hostname)
 		}
 	})
 
-	t.Run("401 returns *HttpAuthError to drive re-auth", func(t *testing.T) {
-		srv := newController(t, loginOK("tok"), http.StatusUnauthorized, "")
-		c := unifi.NewHTTPClient(srv.URL, unifi.WithAuthToken("stale"))
-		_, err := c.GetActiveClients("default")
-		var authErr *unifi.HttpAuthError
+	t.Run("401 returns *AuthError", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /proxy/network/integration/v1/sites/{site}/clients", func(w http.ResponseWriter, r *http.Request) {
+			if !requireAPIKey(w, r) {
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		c := unifi.NewHTTPClient(srv.URL, "wrong-key")
+		_, err := c.GetActiveClients("site-uuid")
+		var authErr *unifi.AuthError
 		if !errors.As(err, &authErr) {
-			t.Fatalf("err = %v, want *HttpAuthError", err)
+			t.Fatalf("err = %v, want *AuthError", err)
 		}
 	})
 }

@@ -11,8 +11,7 @@ func setEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
 	base := map[string]string{
 		"UNIFI_HOST":      "https://192.168.1.1",
-		"UNIFI_USERNAME":  "admin",
-		"UNIFI_PASSWORD":  "secret",
+		"UNIFI_API_KEY":   "live-api-key",
 		"TRACK_DEVICES":   "phone1,phone2",
 		"MQTT_BROKER_URL": "mqtt://localhost:1883",
 	}
@@ -72,15 +71,14 @@ func TestMissingTrackDevices(t *testing.T) {
 
 func TestMissingRequiredLive(t *testing.T) {
 	t.Setenv("UNIFI_HOST", "")
-	t.Setenv("UNIFI_USERNAME", "")
-	t.Setenv("UNIFI_PASSWORD", "")
+	t.Setenv("UNIFI_API_KEY", "")
 	t.Setenv("TRACK_DEVICES", "")
 	t.Setenv("MQTT_BROKER_URL", "")
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for missing required vars")
 	}
-	for _, want := range []string{"UNIFI_HOST", "UNIFI_USERNAME", "UNIFI_PASSWORD", "TRACK_DEVICES", "MQTT_BROKER_URL"} {
+	for _, want := range []string{"UNIFI_HOST", "UNIFI_API_KEY", "TRACK_DEVICES", "MQTT_BROKER_URL"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error missing %s: %v", want, err)
 		}
@@ -102,8 +100,8 @@ func TestBadFailureThreshold(t *testing.T) {
 }
 
 func TestModeMockResolvesDefaultURL(t *testing.T) {
-	// Empty creds must be accepted in mock mode.
-	setEnv(t, map[string]string{"MODE": "mock", "UNIFI_HOST": "", "UNIFI_USERNAME": "", "UNIFI_PASSWORD": ""})
+	// An empty API key must be accepted in mock mode.
+	setEnv(t, map[string]string{"MODE": "mock", "UNIFI_HOST": "", "UNIFI_API_KEY": ""})
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -111,8 +109,8 @@ func TestModeMockResolvesDefaultURL(t *testing.T) {
 	if c.UnifiHost != defaultMockURL {
 		t.Errorf("mock host = %q, want %q", c.UnifiHost, defaultMockURL)
 	}
-	if c.UnifiUsername == "" || c.UnifiPassword == "" {
-		t.Errorf("mock should supply dummy creds, got user=%q pass=%q", c.UnifiUsername, c.UnifiPassword)
+	if c.UnifiAPIKey == "" {
+		t.Errorf("mock should supply a dummy API key, got %q", c.UnifiAPIKey)
 	}
 }
 
@@ -137,15 +135,15 @@ func TestModeBogus(t *testing.T) {
 
 func TestRedaction(t *testing.T) {
 	setEnv(t, map[string]string{
-		"UNIFI_PASSWORD": "unifi-secret-pw",
-		"MQTT_PASSWORD":  "hunter2",
+		"UNIFI_API_KEY": "unifi-secret-key",
+		"MQTT_PASSWORD": "hunter2",
 	})
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	s := c.String()
-	for _, leak := range []string{"unifi-secret-pw", "hunter2"} {
+	for _, leak := range []string{"unifi-secret-key", "hunter2"} {
 		if strings.Contains(s, leak) {
 			t.Errorf("String() leaked %q: %s", leak, s)
 		}

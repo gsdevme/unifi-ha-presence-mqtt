@@ -1,10 +1,10 @@
 Feature: Publish UniFi device presence to MQTT with Home Assistant autodiscovery
 
-  The service authenticates to the (mock) UniFi controller, reads the active
-  clients, applies the presence debounce and republishes each tracked device to
-  MQTT with HA autodiscovery.
+  The service reads the connected clients from the (mock) UniFi Network
+  Integration API, applies the presence debounce and republishes each tracked
+  device to MQTT with HA autodiscovery.
 
-  Scenario: Authenticate and publish discovery on startup
+  Scenario: Resolve the site and publish discovery on startup
     Given the tracked devices are "phone1,phone2"
     And "phone1" is active on the controller
     When the service starts up
@@ -33,16 +33,6 @@ Feature: Publish UniFi device presence to MQTT with Home Assistant autodiscovery
     Then the state for "phone1" reports present true
     When a poll runs
     Then the state for "phone1" reports present false
-
-  Scenario: Re-authenticate when the controller session expires
-    Given the tracked devices are "phone1"
-    And "phone1" is active on the controller
-    When the service starts up
-    And a poll runs
-    And the controller session expires
-    And a poll runs
-    Then the controller received more than one login
-    And the state for "phone1" reports present true
 
   Scenario: Graceful shutdown publishes offline
     Given the tracked devices are "phone1"

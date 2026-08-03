@@ -33,13 +33,12 @@ All configuration is via environment variables (a local `.env` is loaded automat
 
 | Env var | Default | Required | Description |
 | --- | --- | --- | --- |
-| `MODE` | `live` | no | `live` targets a real controller; `mock` targets the local `mock` server. |
+| `MODE` | `live` | no | `live` targets a real console (Integration API); `mock` targets the local `mock` server. |
 | `MOCK_URL` | `http://localhost:8090` | no | Mock base URL (only when `MODE=mock`). |
-| `UNIFI_HOST` | — | if `live` | Controller base URL, e.g. `https://192.168.1.1`. |
-| `UNIFI_USERNAME` | — | if `live` | Controller local-admin username. |
-| `UNIFI_PASSWORD` | — | if `live` | Controller local-admin password. |
-| `UNIFI_SITE` | `default` | no | UniFi site id. |
-| `TRACK_DEVICES` | — | yes | Comma-separated hostnames to track, e.g. `phone1,phone2`. |
+| `UNIFI_HOST` | — | if `live` | Console base URL, e.g. `https://192.168.1.1`. |
+| `UNIFI_API_KEY` | — | if `live` | Local Integration API key (sent as `X-API-KEY`). See [Onboarding](#onboarding-local-api-key). |
+| `UNIFI_SITE` | `default` | no | UniFi site **name**, resolved to its UUID at startup. |
+| `TRACK_DEVICES` | — | yes | Comma-separated `Name` or `Name=Pattern` entries. See [Matching devices](#matching-devices). |
 | `POLL_INTERVAL` | `10s` | no | Poll cadence (floor `2s`). |
 | `FAILURE_THRESHOLD` | `5` | no | Consecutive missed polls before a device flips to `not_home` (≥1). |
 | `POLL_MAX_RETRIES` | `3` | no | Transient-error retries per poll. |
@@ -54,6 +53,53 @@ All configuration is via environment variables (a local `.env` is loaded automat
 
 See `.env.dist` for a ready-to-copy template (it ships `MODE=mock`).
 
+## Onboarding (local API key)
+
+This service uses the official **UniFi Network Integration API** over a **local
+connection** — a static API key, no username/password login (which breaks with MFA).
+
+1. **Generate a local API key.** In the console's UniFi Network app:
+   **Settings → Control Plane → Integrations → API Keys → Create API Key**, then copy
+   it (it is shown once). *(The exact menu location can vary by firmware; if the local
+   menu differs, `unifi.ui.com` can also mint a key for the console.)*
+2. **Verify locally** (the console uses a self-signed cert, hence `-k`):
+   ```sh
+   curl -k -H "X-API-KEY: <key>" https://<gateway-ip>/proxy/network/integration/v1/sites
+   curl -k -H "X-API-KEY: <key>" https://<gateway-ip>/proxy/network/integration/v1/sites/<siteId>/clients
+   ```
+   The second call shows the `name` and `macAddress` of each connected device — that is
+   what `TRACK_DEVICES` matches against (see [Matching devices](#matching-devices)).
+3. **Configure env:** `UNIFI_HOST=https://<gateway-ip>`, `UNIFI_API_KEY=<key>`,
+   `UNIFI_SITE=default` (or your site name), `TRACK_DEVICES=iPhone-X=e8:78:65:00:fd:81`,
+   `MQTT_BROKER_URL=…`.
+
+At startup the service lists sites (validating the key) and logs the resolved site
+UUID; a bad key keeps `/readyz` not-ready with a clear log.
+
+## Matching devices
+
+`TRACK_DEVICES` is a comma-separated list of `Name` or `Name=Pattern` entries:
+
+- **`Name`** is the Home Assistant identity — the entity/device name and MQTT topic.
+  You choose it; it need not match anything the console reports.
+- **`Pattern`** (defaults to `Name`) is matched against each connected client. A client
+  matches when the pattern is a **case-insensitive substring** of the client's name, or
+  — when the pattern looks like a full or partial **MAC** — of the client's MAC
+  (separators/case ignored).
+
+The UniFi Integration API reports device names with a MAC-octet suffix appended (e.g.
+`iPhone-X fd:81`) and offers no clean DHCP hostname, so matching is substring-based:
+
+| Entry | Matches |
+| --- | --- |
+| `iPhone-X=e8:78:65:00:fd:81` | HA entity **iPhone-X**, matched by full MAC (rename-proof) |
+| `iPhone-X` | HA entity **iPhone-X**, matched by name substring (`iPhone-X fd:81`) |
+| `Phone=fd:81` | matched by a partial MAC suffix |
+
+For phones that use a **rotating / private Wi-Fi MAC**, match on a stable UniFi
+**name** rather than the MAC (set a fixed alias on the client in UniFi if needed).
+Patterns should be specific enough to be unique — the first matching client wins.
+
 ## Running
 
 ### Docker (GHCR)
@@ -61,8 +107,7 @@ See `.env.dist` for a ready-to-copy template (it ships `MODE=mock`).
 ```bash
 docker run --name unifi-ha-presence \
   -e UNIFI_HOST="https://192.168.1.1" \
-  -e UNIFI_USERNAME="admin" \
-  -e UNIFI_PASSWORD="password" \
+  -e UNIFI_API_KEY="your-local-api-key" \
   -e TRACK_DEVICES="phone1,phone2" \
   -e MQTT_BROKER_URL="mqtt://mqtt:1883" \
   -p 8080:8080 \
@@ -87,8 +132,7 @@ kind: Secret
 metadata:
   name: unifi-ha-presence
 data:
-  UNIFI_USERNAME: YWRtaW4=       # admin
-  UNIFI_PASSWORD: cGFzc3dvcmQ=   # password
+  UNIFI_API_KEY: eW91ci1sb2NhbC1hcGkta2V5   # your-local-api-key
 ---
 apiVersion: apps/v1
 kind: Deployment
