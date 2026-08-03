@@ -1,12 +1,10 @@
-// Package scheduler runs the presence poll loop: fetch active clients, apply the
+// Package scheduler runs the presence poll loop: fetch connected clients, apply the
 // presence debounce, publish per-device state and report the outcome to health. It
-// re-authenticates transparently on an expired UniFi session and retries transient
-// errors with backoff. See docs/specs/04-polling-scheduling.md.
+// retries transient errors with backoff. See docs/specs/04-polling-scheduling.md.
 package scheduler
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -15,11 +13,11 @@ import (
 	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/unifi"
 )
 
-// ClientProvider supplies the controller's active clients and owns the credentials
-// needed to re-authenticate when the session expires.
+// ClientProvider supplies the console's currently connected clients. The
+// Integration API key is static, so there is nothing to re-authenticate: a
+// persistent auth failure surfaces as a poll failure (flipping /readyz not-ready).
 type ClientProvider interface {
 	ActiveClients(ctx context.Context) ([]unifi.ClientResponse, error)
-	Reauthenticate(ctx context.Context) error
 }
 
 // Presence applies a snapshot of active clients to the tracked devices, returning
@@ -127,9 +125,8 @@ func (s *Scheduler) poll(ctx context.Context) {
 	s.health.MarkSuccess()
 }
 
-// fetchWithRetry fetches active clients, retrying transient errors with
-// exponential backoff up to MaxRetries. Each attempt transparently re-authenticates
-// once on an expired session.
+// fetchWithRetry fetches connected clients, retrying transient errors with
+// exponential backoff up to MaxRetries.
 func (s *Scheduler) fetchWithRetry(ctx context.Context) ([]unifi.ClientResponse, error) {
 	var lastErr error
 	backoff := time.Second
@@ -142,7 +139,7 @@ func (s *Scheduler) fetchWithRetry(ctx context.Context) ([]unifi.ClientResponse,
 			}
 			backoff *= 2
 		}
-		active, err := s.fetchOnce(ctx)
+		active, err := s.provider.ActiveClients(ctx)
 		if err == nil {
 			return active, nil
 		}
@@ -153,20 +150,4 @@ func (s *Scheduler) fetchWithRetry(ctx context.Context) ([]unifi.ClientResponse,
 		s.logger.DebugContext(ctx, "poll attempt failed", "attempt", attempt, "err", err)
 	}
 	return nil, lastErr
-}
-
-// fetchOnce fetches active clients, re-authenticating and retrying once if the
-// session has expired (*HttpAuthError). This preserves the token-reuse +
-// transparent re-auth behaviour of the original daemon.
-func (s *Scheduler) fetchOnce(ctx context.Context) ([]unifi.ClientResponse, error) {
-	active, err := s.provider.ActiveClients(ctx)
-	var authErr *unifi.HttpAuthError
-	if errors.As(err, &authErr) {
-		s.logger.InfoContext(ctx, "session expired, re-authenticating")
-		if rerr := s.provider.Reauthenticate(ctx); rerr != nil {
-			return nil, rerr
-		}
-		return s.provider.ActiveClients(ctx)
-	}
-	return active, err
 }

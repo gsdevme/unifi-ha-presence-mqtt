@@ -36,17 +36,19 @@ go vet ./... && go build ./...
 
 ## Architecture
 
-- **`internal/unifi`** — self-contained, read-only controller client (login ->
-  `TOKEN` cookie; active clients via `stat/sta`). `*HttpAuthError` on 401 drives
-  re-auth. No external UniFi module.
+- **`internal/unifi`** — self-contained, read-only client for the official UniFi
+  Network **Integration API** (static `X-API-KEY` header; sites + connected clients
+  under `/proxy/network/integration/v1`, paginated). `*AuthError` on 401/403 (bad
+  key — no re-auth). No external UniFi module.
 - **`internal/presence`** — pure domain: `Tracker` + the asymmetric debounce.
 - **`internal/homeassistant`** — pure HA discovery/state payload builder (one
   device_tracker + one connectivity binary_sensor per device, shared retained state
   doc, service-wide availability).
 - **`internal/mqtt` / `internal/publisher`** — autopaho MQTT5 (LWT + reconnect
   republish) behind a `Publisher` interface with a recording fake.
-- **`internal/scheduler`** — poll loop (immediate first run + ticker), re-auth on
-  401, transient retry; `Now`/`After` injectable for `testing/synctest`.
+- **`internal/scheduler`** — poll loop (immediate first run + ticker), transient
+  retry with backoff (no re-auth; the API key is static); `Now`/`After` injectable
+  for `testing/synctest`.
 - **`internal/server`** — `/healthz`, `/readyz`, HTML status page (devices
   present/absent; IP/MAC omitted).
 - **`internal/mock`** — in-process controller mock shared by godog + the `mock`

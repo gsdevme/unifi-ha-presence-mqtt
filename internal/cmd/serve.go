@@ -4,9 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -55,11 +54,17 @@ func runServe(ctx context.Context) error {
 		healthErr <- nil
 	}()
 
-	// UniFi client: authenticate up front (re-auth-on-401 lives in the provider).
-	provider := newUnifiProvider(cfg, logger)
-	if err := provider.Reauthenticate(ctx); err != nil {
-		return fmt.Errorf("unifi authenticate: %w", err)
+	// UniFi client: a single Integration API client authenticated by the static
+	// X-API-KEY. Listing sites up front validates the key early (a clear onboarding
+	// signal) and resolves the UNIFI_SITE name to its UUID.
+	client := unifi.NewHTTPClient(cfg.UnifiHost, cfg.UnifiAPIKey)
+	siteID, err := resolveSite(client, cfg.UnifiSite)
+	if err != nil {
+		return fmt.Errorf("unifi: %w (check UNIFI_API_KEY, UNIFI_HOST, and that the "+
+			"Network Integration API is reachable at %s)", err, cfg.UnifiHost)
 	}
+	logger.Info("resolved unifi site", "name", cfg.UnifiSite, "id", siteID)
+	provider := &unifiProvider{client: client, siteID: siteID}
 
 	tracker := presence.NewTracker(cfg.TrackDevices, cfg.FailureThreshold)
 
@@ -170,44 +175,38 @@ func deviceViews(devices []presence.Device) []server.DeviceView {
 	return views
 }
 
-// unifiProvider owns the UniFi credentials and current client, re-authenticating
-// on demand when the session expires. It satisfies scheduler.ClientProvider.
+// unifiProvider holds the Integration API client and the resolved site UUID. The
+// API key is static so the client is built once; there is no re-auth. It satisfies
+// scheduler.ClientProvider.
 type unifiProvider struct {
-	host, username, password, site string
-	logger                         *slog.Logger
-
-	mu     sync.Mutex
 	client unifi.Client
-}
-
-func newUnifiProvider(cfg *config.Config, logger *slog.Logger) *unifiProvider {
-	return &unifiProvider{
-		host:     cfg.UnifiHost,
-		username: cfg.UnifiUsername,
-		password: cfg.UnifiPassword,
-		site:     cfg.UnifiSite,
-		logger:   logger,
-	}
+	siteID string
 }
 
 func (p *unifiProvider) ActiveClients(_ context.Context) ([]unifi.ClientResponse, error) {
-	p.mu.Lock()
-	c := p.client
-	p.mu.Unlock()
-	return c.GetActiveClients(p.site)
+	return p.client.GetActiveClients(p.siteID)
 }
 
-// Reauthenticate logs in with the stored credentials and rebuilds the client to
-// reuse the fresh token, mirroring the token-reuse behaviour of the daemon.
-func (p *unifiProvider) Reauthenticate(_ context.Context) error {
-	token, err := unifi.NewHTTPClient(p.host, unifi.WithCredentials(p.username, p.password)).GetAuthToken()
+// resolveSite lists the console's sites (validating the API key early) and returns
+// the UUID whose name matches wantName (case-insensitive). When only one site
+// exists it is used regardless of name.
+func resolveSite(client unifi.Client, wantName string) (string, error) {
+	sites, err := client.ListSites()
 	if err != nil {
-		return err
+		return "", err
 	}
-	p.mu.Lock()
-	p.client = unifi.NewHTTPClient(p.host, unifi.WithAuthToken(token))
-	p.mu.Unlock()
-	return nil
+	switch len(sites) {
+	case 0:
+		return "", errors.New("no sites returned")
+	case 1:
+		return sites[0].ID, nil
+	}
+	for _, s := range sites {
+		if strings.EqualFold(s.Name, wantName) {
+			return s.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no site named %q among %d sites", wantName, len(sites))
 }
 
 func shutdownServer(srv *http.Server) error {

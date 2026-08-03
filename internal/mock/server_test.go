@@ -9,21 +9,30 @@ import (
 	"github.com/gsdevme/unifi-ha-presence-mqtt/internal/unifi"
 )
 
-func TestMockLoginAndActiveClients(t *testing.T) {
+func TestMockSitesAndClients(t *testing.T) {
 	m := mock.New(mock.Defaults())
 	srv := httptest.NewServer(m.Handler())
 	defer srv.Close()
 
-	c := unifi.NewHTTPClient(srv.URL, unifi.WithCredentials("admin", "pass"))
-	clients, err := c.GetActiveClients("default")
+	c := unifi.NewHTTPClient(srv.URL, "any-key")
+
+	sites, err := c.ListSites()
+	if err != nil {
+		t.Fatalf("ListSites: %v", err)
+	}
+	if len(sites) != 1 || sites[0].ID != mock.SiteID || sites[0].Name != "default" {
+		t.Fatalf("sites = %+v", sites)
+	}
+
+	clients, err := c.GetActiveClients(sites[0].ID)
 	if err != nil {
 		t.Fatalf("GetActiveClients: %v", err)
 	}
 	if len(clients) != 2 || clients[0].Hostname != "phone1" || clients[0].IPAddress != "192.168.1.20" {
 		t.Fatalf("clients = %+v", clients)
 	}
-	if login, sta := m.Counts(); login != 1 || sta != 1 {
-		t.Fatalf("counts login=%d sta=%d, want 1/1", login, sta)
+	if sitesHits, clientsHits := m.Counts(); sitesHits != 1 || clientsHits != 1 {
+		t.Fatalf("counts sites=%d clients=%d, want 1/1", sitesHits, clientsHits)
 	}
 }
 
@@ -33,8 +42,8 @@ func TestMockSetClients(t *testing.T) {
 	defer srv.Close()
 	m.SetClients([]mock.Client{{Hostname: "laptop", IPAddress: "10.0.0.9", MACAddress: "ff:ee"}})
 
-	c := unifi.NewHTTPClient(srv.URL, unifi.WithCredentials("admin", "pass"))
-	clients, err := c.GetActiveClients("default")
+	c := unifi.NewHTTPClient(srv.URL, "any-key")
+	clients, err := c.GetActiveClients(mock.SiteID)
 	if err != nil {
 		t.Fatalf("GetActiveClients: %v", err)
 	}
@@ -43,36 +52,16 @@ func TestMockSetClients(t *testing.T) {
 	}
 }
 
-func TestMockExpireSessionForcesReauth(t *testing.T) {
+func TestMockRequiresAPIKey(t *testing.T) {
 	m := mock.New(mock.Defaults())
 	srv := httptest.NewServer(m.Handler())
 	defer srv.Close()
 
-	// Log in once and reuse the token, like the provider does.
-	loginClient := unifi.NewHTTPClient(srv.URL, unifi.WithCredentials("admin", "pass"))
-	tok, err := loginClient.GetAuthToken()
-	if err != nil {
-		t.Fatalf("login: %v", err)
-	}
-	tokenClient := unifi.NewHTTPClient(srv.URL, unifi.WithAuthToken(tok))
-	if _, err := tokenClient.GetActiveClients("default"); err != nil {
-		t.Fatalf("first poll should succeed: %v", err)
-	}
-
-	// Expiring the session makes the cached token stale -> 401.
-	m.ExpireSession()
-	_, err = tokenClient.GetActiveClients("default")
-	var authErr *unifi.HttpAuthError
+	// An empty X-API-KEY is rejected with 401 -> *AuthError.
+	c := unifi.NewHTTPClient(srv.URL, "")
+	_, err := c.ListSites()
+	var authErr *unifi.AuthError
 	if !errors.As(err, &authErr) {
-		t.Fatalf("stale token err = %v, want *HttpAuthError", err)
-	}
-
-	// Re-authenticating yields the new token, which works again.
-	tok2, err := unifi.NewHTTPClient(srv.URL, unifi.WithCredentials("admin", "pass")).GetAuthToken()
-	if err != nil {
-		t.Fatalf("reauth login: %v", err)
-	}
-	if _, err := unifi.NewHTTPClient(srv.URL, unifi.WithAuthToken(tok2)).GetActiveClients("default"); err != nil {
-		t.Fatalf("poll after reauth should succeed: %v", err)
+		t.Fatalf("err = %v, want *AuthError for a missing API key", err)
 	}
 }

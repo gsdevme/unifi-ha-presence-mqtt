@@ -23,12 +23,11 @@ const defaultMockURL = "http://localhost:8090"
 // Config is the fully-parsed, validated service configuration.
 type Config struct {
 	// UniFi
-	Mode          string // "live" | "mock"
-	UnifiHost     string // controller base URL (resolved to MOCK_URL in mock mode)
-	UnifiUsername string
-	UnifiPassword string
-	UnifiSite     string
-	TrackDevices  []string
+	Mode         string // "live" | "mock"
+	UnifiHost    string // console base URL (resolved to MOCK_URL in mock mode)
+	UnifiAPIKey  string // Integration API key sent as the X-API-KEY header
+	UnifiSite    string // human site name, resolved to a site UUID at startup
+	TrackDevices []string
 
 	// Polling & scheduling
 	PollInterval          time.Duration
@@ -54,8 +53,7 @@ type Config struct {
 func Load() (*Config, error) {
 	c := &Config{
 		UnifiHost:         os.Getenv("UNIFI_HOST"),
-		UnifiUsername:     os.Getenv("UNIFI_USERNAME"),
-		UnifiPassword:     os.Getenv("UNIFI_PASSWORD"),
+		UnifiAPIKey:       os.Getenv("UNIFI_API_KEY"),
 		UnifiSite:         getEnv("UNIFI_SITE", "default"),
 		MQTTBrokerURL:     os.Getenv("MQTT_BROKER_URL"),
 		MQTTUsername:      os.Getenv("MQTT_USERNAME"),
@@ -70,27 +68,21 @@ func Load() (*Config, error) {
 
 	var errs []error
 
-	// Resolve the target: live hits the real controller, mock points UNIFI_HOST at
-	// the local mock server and supplies dummy credentials.
+	// Resolve the target: live hits the real console over the Integration API, mock
+	// points UNIFI_HOST at the local mock server and supplies a dummy API key.
 	c.Mode = strings.ToLower(getEnv("MODE", "live"))
 	switch c.Mode {
 	case "live":
 		if c.UnifiHost == "" {
 			errs = append(errs, errors.New("UNIFI_HOST is required"))
 		}
-		if c.UnifiUsername == "" {
-			errs = append(errs, errors.New("UNIFI_USERNAME is required"))
-		}
-		if c.UnifiPassword == "" {
-			errs = append(errs, errors.New("UNIFI_PASSWORD is required"))
+		if c.UnifiAPIKey == "" {
+			errs = append(errs, errors.New("UNIFI_API_KEY is required"))
 		}
 	case "mock":
 		c.UnifiHost = getEnv("MOCK_URL", defaultMockURL)
-		if c.UnifiUsername == "" {
-			c.UnifiUsername = "mock"
-		}
-		if c.UnifiPassword == "" {
-			c.UnifiPassword = "mock"
+		if c.UnifiAPIKey == "" {
+			c.UnifiAPIKey = "mock"
 		}
 	default:
 		errs = append(errs, fmt.Errorf("MODE must be live or mock, got %q", c.Mode))
@@ -134,15 +126,16 @@ func Load() (*Config, error) {
 	return c, nil
 }
 
-// String renders the config with secrets redacted (safe to log).
+// String renders the config with secrets redacted (safe to log). The UniFi API
+// key and MQTT password are redacted by omission — they are never printed.
 func (c *Config) String() string {
 	host := c.UnifiHost
 	if c.Mode == "mock" {
 		host = fmt.Sprintf("mock(%s)", c.UnifiHost)
 	}
-	return fmt.Sprintf("Config{mode=%s host=%s user=%s site=%s track=%v poll=%s failThreshold=%d "+
+	return fmt.Sprintf("Config{mode=%s host=%s site=%s track=%v poll=%s failThreshold=%d "+
 		"maxRetries=%d readyThreshold=%d broker=%s clientID=%s topicPrefix=%s haPrefix=%s health=%s log=%s/%s}",
-		c.Mode, host, c.UnifiUsername, c.UnifiSite, c.TrackDevices, c.PollInterval, c.FailureThreshold,
+		c.Mode, host, c.UnifiSite, c.TrackDevices, c.PollInterval, c.FailureThreshold,
 		c.PollMaxRetries, c.ReadyFailureThreshold, c.MQTTBrokerURL, c.MQTTClientID, c.MQTTTopicPrefix,
 		c.HADiscoveryPrefix, c.HealthAddr, c.LogLevel, c.LogFormat)
 }

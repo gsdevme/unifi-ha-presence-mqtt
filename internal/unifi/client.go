@@ -1,37 +1,34 @@
-// Package unifi is a self-contained, read-only client for the two UniFi Network
-// controller (UniFi OS / UDM) endpoints this service needs: login and active
-// clients. It is a port of github.com/gsdevme/unifi/pkg/unifi so the repo carries
-// no external UniFi dependency. See docs/specs/01-unifi-client.md.
+// Package unifi is a self-contained, read-only client for the official UniFi
+// Network Integration API — the supported local integration surface. It talks to
+// the two endpoints this service needs (list sites, list connected clients) over
+// the console's local /proxy/network/integration/v1 base, authenticated by a
+// static X-API-KEY header. There is no login, cookie or session to manage. See
+// docs/specs/01-unifi-client.md.
 package unifi
 
 import "fmt"
 
-// Controller endpoint paths (relative to the controller base URL).
+// Integration API endpoint paths (relative to the console base URL).
 const (
-	authLoginURI     = "api/auth/login"
-	activeClientsURI = "proxy/network/api/s/%s/stat/sta"
+	integrationSitesURI   = "proxy/network/integration/v1/sites"
+	integrationClientsURI = "proxy/network/integration/v1/sites/%s/clients"
 )
 
-// authRequestBody is the JSON body posted to the login endpoint.
-type authRequestBody struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Remember bool   `json:"remember,omitempty"`
-}
-
-// Client is the read-only UniFi controller surface used by the service. On an
-// expired session both methods return *HttpAuthError so callers can re-auth via
-// errors.As.
+// Client is the read-only UniFi Network Integration API surface used by the
+// service. Both methods authenticate with the configured X-API-KEY; on 401/403
+// they return *AuthError. The key is static, so an AuthError is a bad key — not a
+// signal to re-authenticate.
 type Client interface {
-	// GetAuthToken returns the controller session token (the TOKEN cookie value),
-	// logging in with credentials on first use, or the token supplied via
-	// WithAuthToken.
-	GetAuthToken() (string, error)
-	// GetActiveClients returns the currently active clients for the given site.
+	// ListSites returns the console's sites. UNIFI_SITE (a human name) is resolved
+	// to a site UUID against this list at startup.
+	ListSites() ([]Site, error)
+	// GetActiveClients returns the currently connected clients for the site
+	// identified by its UUID.
 	GetActiveClients(siteID string) ([]ClientResponse, error)
 }
 
-// makeURL joins the controller base URL and a relative path.
+// makeURL joins the console base URL and a relative path (which may carry a query
+// string).
 func makeURL(base, uri string) string {
 	return fmt.Sprintf("%s/%s", base, uri)
 }

@@ -7,29 +7,36 @@ lifecycle/health, `TS` testing, `DP` deployment, `AS` Claude assets.
 
 ## UniFi client (`internal/unifi`)
 
-- **REQ-UF-01** `Client` interface `GetAuthToken`/`GetActiveClients(site)`, built by
-  `NewHTTPClient(url, opt)` with `WithCredentials`/`WithAuthToken` options. → `client.go`, `http.go`
-- **REQ-UF-02** Login `POST api/auth/login` returns a `TOKEN` cookie whose value is the
-  auth token; a pre-supplied token short-circuits login. → `http.go`
-- **REQ-UF-03** Active clients `GET proxy/network/api/s/<site>/stat/sta`, cookie-authed
-  with the `TOKEN` cookie. → `http.go`
+- **REQ-UF-01** `Client` interface `ListSites`/`GetActiveClients(siteID)`, built by
+  `NewHTTPClient(url, apiKey)`. → `client.go`, `http.go`
+- **REQ-UF-02** Every request authenticates with a static `X-API-KEY` header (the local
+  Integration API key); no login, cookie or session. → `http.go`
+- **REQ-UF-03** Sites `GET proxy/network/integration/v1/sites` and connected clients
+  `GET proxy/network/integration/v1/sites/<siteId>/clients`, `X-API-KEY`-authed. → `http.go`
 - **REQ-UF-04** Transport uses `InsecureSkipVerify` (UDM self-signed certs) with a 10s
   timeout. → `http.go`
-- **REQ-UF-05** A `401` on either endpoint returns `*HttpAuthError` so callers can
-  `errors.As` and re-authenticate. → `http.go`, `errors.go`
-- **REQ-UF-06** `ClientResponse` exposes `Hostname, IPAddress, MACAddress, DeviceName,
-  Name, SiteID, LastSeen`, decoded from the controller's `stat/sta` JSON. → `model.go`, `json.go`
+- **REQ-UF-05** A `401`/`403` on either endpoint returns `*AuthError` (bad key); it is
+  not retried as re-auth. → `http.go`, `errors.go`
+- **REQ-UF-06** `ClientResponse` exposes `Hostname, IPAddress, MACAddress, Name,
+  LastSeen`, decoded from the Integration API connected-client JSON (`Hostname` falls
+  back from `hostname` to `name`; `LastSeen` from ISO-8601 `connectedAt`). → `model.go`, `json.go`
 - **REQ-UF-07** Client is fully self-contained in this repo (no external
   `github.com/gsdevme/unifi` module). → `go.mod`
+- **REQ-UF-08** List responses use the pagination envelope
+  `{offset,limit,count,totalCount,data}`; the client walks all pages. → `http.go`, `json.go`
+- **REQ-UF-09** `UNIFI_SITE` (a human name) is resolved to a site UUID at startup via
+  `ListSites`, falling back to the sole site when only one exists. → `cmd/serve.go`
 
 ## Domain model — presence (`internal/presence`)
 
 - **REQ-DM-01** `Device{Hostname, IPAddress, MACAddress, Present}` is the per-device
-  presence state published to HA. → `presence.go`
-- **REQ-DM-02** `Tracker` holds, per tracked hostname, a `Device` plus a
-  consecutive-miss counter, seeded from the tracked-hostname list. → `presence.go`
-- **REQ-DM-03** `Apply(active)` matches active clients by `Hostname`; on a sighting it
-  sets `Present=true`, refreshes ip/mac and resets the miss counter immediately. → `presence.go`
+  presence state published to HA; `Hostname` is the stable identity (topic/object-id/
+  display name). → `presence.go`
+- **REQ-DM-02** `Tracker` holds, per tracked device, a `Device`, a matcher pattern and a
+  consecutive-miss counter, seeded from the tracked-entry list. → `presence.go`
+- **REQ-DM-03** `Apply(active)` matches connected clients by the device's pattern; on a
+  sighting it sets `Present=true`, refreshes ip/mac and resets the miss counter
+  immediately. → `presence.go`
 - **REQ-DM-04** Asymmetric debounce: a miss increments the counter and only flips
   `Present=false` once it reaches `FailureThreshold`; last-known ip/mac are retained
   while absent. → `presence.go`
@@ -37,6 +44,9 @@ lifecycle/health, `TS` testing, `DP` deployment, `AS` Claude assets.
   first sighting. → `presence.go`
 - **REQ-DM-06** `Apply` returns the full current per-device state (every tracked
   device) in a stable order. → `presence.go`
+- **REQ-DM-07** Tracked entries are `Name` or `Name=Pattern`; `Pattern` (default
+  `Name`) matches a client as a case-insensitive substring of its name/hostname, or —
+  when MAC-like — of its MAC (separators ignored). First match wins. → `presence.go`
 
 ## MQTT & Home Assistant (`internal/mqtt`, `internal/homeassistant`, `internal/publisher`)
 
@@ -65,10 +75,11 @@ lifecycle/health, `TS` testing, `DP` deployment, `AS` Claude assets.
 
 - **REQ-SC-01** Poll loop at `POLL_INTERVAL` (default 10s), immediate first run,
   serialised (ticks never overlap). → `scheduler.go`
-- **REQ-SC-02** Each tick: `GetActiveClients(site)` → `presence.Apply` → publish state
+- **REQ-SC-02** Each tick: `GetActiveClients(siteID)` → `presence.Apply` → publish state
   per device → report success/failure to health. → `scheduler.go`
-- **REQ-SC-03** On `*HttpAuthError`, re-authenticate and rebuild the client, then retry
-  transient errors up to `POLL_MAX_RETRIES` with exponential backoff. → `scheduler.go`
+- **REQ-SC-03** No re-auth (the API key is static): every poll error — including a bad
+  key — is retried up to `POLL_MAX_RETRIES` with exponential backoff and otherwise counts
+  as a failure for readiness. → `scheduler.go`
 - **REQ-SC-04** `Now`/`After` are injectable for deterministic `testing/synctest`
   tests. → `scheduler.go`
 
@@ -79,10 +90,10 @@ lifecycle/health, `TS` testing, `DP` deployment, `AS` Claude assets.
   parse; `FAILURE_THRESHOLD >= 1`; `POLL_INTERVAL` floor. → `config.go`
 - **REQ-CF-03** Secrets redacted in logs/`String()`. → `config.go`
 - **REQ-CF-04** `MODE` (`live`|`mock`) resolves the UniFi target: `live` requires
-  `UNIFI_HOST`/`UNIFI_USERNAME`/`UNIFI_PASSWORD`; `mock` points the host at `MOCK_URL`
-  and supplies dummy credentials. Code/image default `live`; `.env.dist` ships `mock`. → `config.go`, `.env.dist`, `Dockerfile`
-- **REQ-CF-05** `TRACK_DEVICES` (comma list, required) parsed into the tracked-hostname
-  set. → `config.go`
+  `UNIFI_HOST`/`UNIFI_API_KEY`; `mock` points the host at `MOCK_URL` and supplies a dummy
+  API key. Code/image default `live`; `.env.dist` ships `mock`. → `config.go`, `.env.dist`, `Dockerfile`
+- **REQ-CF-05** `TRACK_DEVICES` (comma list, required) parsed into the tracked-entry set;
+  each entry is `Name` or `Name=Pattern` (see REQ-DM-07). → `config.go`, `presence.go`
 - **REQ-CF-06** `godotenv` loads local `.env`; `.env.dist` template committed. → `cmd/root.go`, `.env.dist`
 
 ## Lifecycle & health (`internal/server`, `cmd`, `main.go`)
@@ -102,11 +113,12 @@ lifecycle/health, `TS` testing, `DP` deployment, `AS` Claude assets.
 
 ## Testing (`internal/mock`, `features`)
 
-- **REQ-TS-01** Mock UniFi controller implements `POST api/auth/login` (sets `TOKEN`
-  cookie) and `GET proxy/network/api/s/<site>/stat/sta` (configurable client list). → `mock/server.go`, `mock/routes.go`
+- **REQ-TS-01** Mock UniFi console implements the Integration API `GET
+  proxy/network/integration/v1/sites` and `.../sites/<site>/clients` (configurable client
+  list), requiring a non-empty `X-API-KEY`. → `mock/server.go`, `mock/routes.go`
 - **REQ-TS-02** Mock is shared by the godog suite and the standalone `mock` subcommand. → `mock/server.go`, `cmd/mock.go`
-- **REQ-TS-03** godog scenarios: startup discovery retained, present→`home`
-  immediately, absent→`not_home` only after the threshold, re-auth on 401, availability
+- **REQ-TS-03** godog scenarios: startup site-resolution + discovery retained,
+  present→`home` immediately, absent→`not_home` only after the threshold, availability
   `online`/graceful `offline`. → `features/presence.feature`
 - **REQ-TS-04** Unit tests for `unifi`, `config`, `presence`, discovery, publisher,
   scheduler, server. → `*_test.go`
