@@ -84,7 +84,7 @@ func (c *httpClient) GetAuthToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("authentication failed to %s: %w", c.baseURL, err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
 		if res.StatusCode == http.StatusUnauthorized {
@@ -120,7 +120,7 @@ func (c *httpClient) GetActiveClients(siteID string) ([]ClientResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get active clients from %s: %w", requestURL, err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
 		if res.StatusCode == http.StatusUnauthorized {

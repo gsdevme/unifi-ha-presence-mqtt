@@ -1,2 +1,14 @@
+# Secrets / local env
+.env
+
+# Build output
+/bin/
+/dist/
+*.out
+*.test
 coverage.out
-dist/
+
+# Editor / OS
+.DS_Store
+.idea/
+*.swp
