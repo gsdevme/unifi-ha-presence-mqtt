@@ -19,15 +19,9 @@ type statusView struct {
 	GoVersion string
 
 	DevicesReady bool
-	Devices      []deviceRow
+	Devices      []DeviceView
 
 	PollInterval string
-}
-
-// deviceRow is a single tracked device rendered under the Devices heading.
-type deviceRow struct {
-	Hostname string
-	Present  bool
 }
 
 // statusTmpl is parsed once at package load. The markup is deliberately minimal and
@@ -70,7 +64,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, _ *http.Request) {
 		Uptime:       time.Since(s.startedAt).Round(time.Second).String(),
 		GoVersion:    runtime.Version(),
 		DevicesReady: s.devicesSet,
-		Devices:      deviceRows(s.devices),
+		Devices:      append([]DeviceView(nil), s.devices...),
 		PollInterval: s.cfg.PollInterval.String(),
 	}
 	s.mu.Unlock()
@@ -78,12 +72,4 @@ func (s *Server) handleRoot(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = statusTmpl.Execute(w, view)
-}
-
-func deviceRows(devices []DeviceView) []deviceRow {
-	rows := make([]deviceRow, 0, len(devices))
-	for _, d := range devices {
-		rows = append(rows, deviceRow{Hostname: d.Hostname, Present: d.Present})
-	}
-	return rows
 }
